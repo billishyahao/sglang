@@ -1,13 +1,13 @@
 # Install the dependency in CI.
 
 # Use repo from environment variable, passed from GitHub Actions
-FLASHINFER_REPO="${FLASHINFER_REPO:-https://flashinfer.ai/whl/cu121/torch2.4/flashinfer}"
+FLASHINFER_REPO="${FLASHINFER_REPO:-https://flashinfer.ai/whl/cu124/torch2.4/flashinfer}"
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 bash "${SCRIPT_DIR}/killall_sglang.sh"
 
 pip install --upgrade pip
-pip install -e "python[all]" --find-links https://flashinfer.ai/whl/cu121/torch2.4/flashinfer/
+pip install -e "python[all]" --find-links https://flashinfer.ai/whl/cu124/torch2.4/flashinfer/
 
 # Force reinstall flashinfer
 pip install flashinfer==0.2.0.post1 --find-links ${FLASHINFER_REPO} --force-reinstall --no-deps
