@@ -570,6 +570,7 @@ class BenchmarkMetrics:
     total_output: int
     total_output_retokenized: int
     request_throughput: float
+    request_goodput: float
     input_throughput: float
     output_throughput: float
     output_throughput_retokenized: float
@@ -578,6 +579,8 @@ class BenchmarkMetrics:
     mean_ttft_ms: float
     median_ttft_ms: float
     std_ttft_ms: float
+    p90_ttft_ms: float
+    p95_ttft_ms: float
     p99_ttft_ms: float
     mean_tpot_ms: float
     median_tpot_ms: float
@@ -586,6 +589,7 @@ class BenchmarkMetrics:
     mean_itl_ms: float
     median_itl_ms: float
     std_itl_ms: float
+    p90_itl_ms: float
     p95_itl_ms: float
     p99_itl_ms: float
     max_itl_ms: float
@@ -1097,11 +1101,13 @@ def calculate_metrics(
     dur_s: float,
     tokenizer: PreTrainedTokenizerBase,
     backend: str,
+    goodput_config_dict: Optional[Dict[str, float]] = None,
 ) -> Tuple[BenchmarkMetrics, List[int]]:
     output_lens: List[int] = []
     retokenized_output_lens: List[int] = []
     total_input = 0
     completed = 0
+    good_completed = 0
     itls: List[float] = []
     tpots: List[float] = []
     ttfts: List[float] = []
@@ -1119,13 +1125,33 @@ def calculate_metrics(
                 tpots.append((outputs[i].latency - outputs[i].ttft) / (output_len - 1))
             itls += outputs[i].itl
             ttfts.append(outputs[i].ttft)
-
             e2e_latencies.append(outputs[i].latency)
-
             completed += 1
         else:
             output_lens.append(0)
             retokenized_output_lens.append(0)
+
+    # Calculate goodput if config is provided
+    if goodput_config_dict:
+        valid_metrics = []
+        slo_values = []
+
+        if "ttft" in goodput_config_dict:
+            valid_metrics.append(ttfts)
+            slo_values.append(
+                goodput_config_dict["ttft"] / 1000
+            )  # Convert ms to seconds
+        if "tpot" in goodput_config_dict:
+            valid_metrics.append(tpots)
+            slo_values.append(goodput_config_dict["tpot"] / 1000)
+        if "e2el" in goodput_config_dict:
+            valid_metrics.append(e2e_latencies)
+            slo_values.append(goodput_config_dict["e2el"] / 1000)
+
+        for req_metric in zip(*valid_metrics):
+            is_good_req = all([s >= r for s, r in zip(slo_values, req_metric)])
+            if is_good_req:
+                good_completed += 1
 
     if completed == 0:
         warnings.warn(
@@ -1139,6 +1165,7 @@ def calculate_metrics(
         total_output=sum(output_lens),
         total_output_retokenized=sum(retokenized_output_lens),
         request_throughput=completed / dur_s,
+        request_goodput=good_completed / dur_s if goodput_config_dict else None,
         input_throughput=total_input / dur_s,
         output_throughput=sum(output_lens) / dur_s,
         output_throughput_retokenized=sum(retokenized_output_lens) / dur_s,
@@ -1149,6 +1176,8 @@ def calculate_metrics(
         * 1000,  # ttfts is empty if streaming is not supported by backend
         median_ttft_ms=np.median(ttfts or 0) * 1000,
         std_ttft_ms=np.std(ttfts or 0) * 1000,
+        p90_ttft_ms=np.percentile(ttfts or 0, 90) * 1000,
+        p95_ttft_ms=np.percentile(ttfts or 0, 95) * 1000,
         p99_ttft_ms=np.percentile(ttfts or 0, 99) * 1000,
         mean_tpot_ms=np.mean(tpots or 0) * 1000,
         median_tpot_ms=np.median(tpots or 0) * 1000,
@@ -1157,6 +1186,7 @@ def calculate_metrics(
         mean_itl_ms=np.mean(itls or 0) * 1000,
         median_itl_ms=np.median(itls or 0) * 1000,
         std_itl_ms=np.std(itls or 0) * 1000,
+        p90_itl_ms=np.percentile(itls or 0, 90) * 1000,
         p95_itl_ms=np.percentile(itls or 0, 95) * 1000,
         p99_itl_ms=np.percentile(itls or 0, 99) * 1000,
         max_itl_ms=np.max(itls or 0) * 1000,
@@ -1186,6 +1216,7 @@ async def benchmark(
     pd_separated: bool = False,
     flush_cache: bool = False,
     warmup_requests: int = 1,
+    goodput_config_dict: Optional[Dict[str, float]] = None,
 ):
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[backend]
@@ -1322,6 +1353,7 @@ async def benchmark(
         dur_s=benchmark_duration,
         tokenizer=tokenizer,
         backend=backend,
+        goodput_config_dict=goodput_config_dict,
     )
 
     print("\n{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
@@ -1342,6 +1374,12 @@ async def benchmark(
             "Total generated tokens (retokenized):", metrics.total_output_retokenized
         )
     )
+    if goodput_config_dict:
+        print(
+            "{:<40} {:<10.2f}".format(
+                "Request goodput (req/s):", metrics.request_goodput
+            )
+        )
     print(
         "{:<40} {:<10.2f}".format(
             "Request throughput (req/s):", metrics.request_throughput
@@ -1377,10 +1415,13 @@ async def benchmark(
     print("{s:{c}^{n}}".format(s="Time to First Token", n=50, c="-"))
     print("{:<40} {:<10.2f}".format("Mean TTFT (ms):", metrics.mean_ttft_ms))
     print("{:<40} {:<10.2f}".format("Median TTFT (ms):", metrics.median_ttft_ms))
+    print("{:<40} {:<10.2f}".format("P90 TTFT (ms):", metrics.p90_ttft_ms))
+    print("{:<40} {:<10.2f}".format("P95 TTFT (ms):", metrics.p95_ttft_ms))
     print("{:<40} {:<10.2f}".format("P99 TTFT (ms):", metrics.p99_ttft_ms))
     print("{s:{c}^{n}}".format(s="Inter-Token Latency", n=50, c="-"))
     print("{:<40} {:<10.2f}".format("Mean ITL (ms):", metrics.mean_itl_ms))
     print("{:<40} {:<10.2f}".format("Median ITL (ms):", metrics.median_itl_ms))
+    print("{:<40} {:<10.2f}".format("P90 ITL (ms):", metrics.p90_itl_ms))
     print("{:<40} {:<10.2f}".format("P95 ITL (ms):", metrics.p95_itl_ms))
     print("{:<40} {:<10.2f}".format("P99 ITL (ms):", metrics.p99_itl_ms))
     print("{:<40} {:<10.2f}".format("Max ITL (ms):", metrics.max_itl_ms))
@@ -1417,6 +1458,8 @@ async def benchmark(
             "mean_ttft_ms": metrics.mean_ttft_ms,
             "median_ttft_ms": metrics.median_ttft_ms,
             "std_ttft_ms": metrics.std_ttft_ms,
+            "p90_ttft_ms": metrics.p90_ttft_ms,
+            "p95_ttft_ms": metrics.p95_ttft_ms,
             "p99_ttft_ms": metrics.p99_ttft_ms,
             "mean_tpot_ms": metrics.mean_tpot_ms,
             "median_tpot_ms": metrics.median_tpot_ms,
@@ -1425,6 +1468,7 @@ async def benchmark(
             "mean_itl_ms": metrics.mean_itl_ms,
             "median_itl_ms": metrics.median_itl_ms,
             "std_itl_ms": metrics.std_itl_ms,
+            "p90_itl_ms": metrics.p90_itl_ms,
             "p95_itl_ms": metrics.p95_itl_ms,
             "p99_itl_ms": metrics.p99_itl_ms,
             "concurrency": metrics.concurrency,
@@ -1479,6 +1523,44 @@ def set_global_args(args_: argparse.Namespace):
     args = args_
 
 
+def parse_goodput(slo_pairs):
+    goodput_config_dict = {}
+    try:
+        for slo_pair in slo_pairs:
+            slo_name, slo_val = slo_pair.split(":")
+            goodput_config_dict[slo_name] = float(slo_val)
+    except ValueError as err:
+        raise argparse.ArgumentTypeError(
+            "Invalid format found for service level objectives. "
+            'Specify service level objectives for goodput as "KEY:VALUE" '
+            "pairs, where the key is a metric name, and the value is a "
+            "number in milliseconds."
+        ) from err
+    return goodput_config_dict
+
+
+def check_goodput_args(args):
+    # Check and parse goodput arguments
+    goodput_config_dict = {}
+    VALID_NAMES = ["ttft", "tpot", "e2el"]
+    if args.goodput:
+        goodput_config_dict = parse_goodput(args.goodput)
+        for slo_name, slo_val in goodput_config_dict.items():
+            if slo_name not in VALID_NAMES:
+                raise ValueError(
+                    f"Invalid metric name found, {slo_name}: {slo_val}. "
+                    "The service level objective name should be one of "
+                    f"{str(VALID_NAMES)}. "
+                )
+            if slo_val < 0:
+                raise ValueError(
+                    f"Invalid value found, {slo_name}: {slo_val}. "
+                    "The service level objective value should be "
+                    "non-negative."
+                )
+    return goodput_config_dict
+
+
 def run_benchmark(args_: argparse.Namespace):
     global args
     args = args_
@@ -1496,6 +1578,9 @@ def run_benchmark(args_: argparse.Namespace):
 
     if not hasattr(args, "tokenize_prompt"):
         args.tokenize_prompt = False
+
+    # Parse goodput arguments
+    goodput_config_dict = check_goodput_args(args)
 
     print(f"benchmark_args={args}")
 
@@ -1624,6 +1709,7 @@ def run_benchmark(args_: argparse.Namespace):
             pd_separated=args.pd_separated,
             flush_cache=args.flush_cache,
             warmup_requests=args.warmup_requests,
+            goodput_config_dict=goodput_config_dict,
         )
     )
 
@@ -1823,6 +1909,18 @@ if __name__ == "__main__":
         "--tokenize-prompt",
         action="store_true",
         help="Use integer ids instead of string for inputs. Useful to control prompt lengths accurately",
+    )
+    parser.add_argument(
+        "--goodput",
+        nargs="+",
+        required=False,
+        help='Specify service level objectives for goodput as "KEY:VALUE" '
+        "pairs, where the key is a metric name, and the value is in "
+        'milliseconds. Multiple "KEY:VALUE" pairs can be provided, '
+        "separated by spaces. Allowed request level metric names are "
+        '"ttft", "tpot", "e2el". For more context on the definition of '
+        "goodput, refer to DistServe paper: https://arxiv.org/pdf/2401.09670 "
+        "and the blog: https://hao-ai-lab.github.io/blogs/distserve",
     )
 
     group = parser.add_argument_group("generated-shared-prefix dataset arguments")
