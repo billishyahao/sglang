@@ -12,6 +12,8 @@ from sglang.srt.layers.quantization.deep_gemm_wrapper.configurer import (
 )
 from sglang.srt.server_args import ServerArgs
 
+from sglang.srt.utils import is_hip
+
 logger = logging.getLogger(__name__)
 
 if ENABLE_JIT_DEEPGEMM:
@@ -100,6 +102,8 @@ def update_deep_gemm_config(gpu_id: int, server_args: ServerArgs):
 @contextmanager
 def configure_deep_gemm_num_sms(num_sms):
     if num_sms is None:
+        yield
+    elif is_hip():
         yield
     else:
         original_num_sms = deep_gemm.get_num_sms()
