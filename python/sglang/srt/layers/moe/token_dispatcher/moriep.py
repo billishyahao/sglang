@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, NamedTuple, Optional, Tuple
 
+from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.layers.dp_attention import get_is_extend_in_batch
 from sglang.srt.layers.moe.token_dispatcher.base import (
     BaseDispatcher,
@@ -610,7 +611,13 @@ class _MoriEPDispatcherImplNormal(_MoriEPDispatcherImplBase):
                     recv_scales,
                     recv_topk_ids,
                     packed_recv_count,
-                ) = self.mori_op.dispatch(hidden_states, topk_weights, scale, topk_ids)
+                ) = self.mori_op.dispatch(
+                    hidden_states,
+                    topk_weights,
+                    scale,
+                    topk_ids,
+                    call_local_expert_count=True,
+                )
 
                 if self.async_finish:
                     done_event = torch.cuda.Event(blocking=False, interprocess=False)
@@ -634,10 +641,20 @@ class _MoriEPDispatcherImplNormal(_MoriEPDispatcherImplBase):
                 recv_scales,
                 recv_topk_ids,
                 packed_recv_count,
-            ) = self.mori_op.dispatch(hidden_states, topk_weights, scale, topk_ids)
+            ) = self.mori_op.dispatch(
+                hidden_states,
+                topk_weights,
+                scale,
+                topk_ids,
+                call_local_expert_count=True,
+            )
 
-        # TODO(billishyahao): EPLB
-        # get_global_expert_distribution_recorder().on_deepep_dispatch_normal(
+        get_global_expert_distribution_recorder().on_deepep_dispatch_normal(
+            self.mori_op.local_expert_count,
+            num_tokens_per_rank=None,
+            num_tokens_per_rdma_rank=None,
+            num_tokens_per_expert=None,
+        )
 
         return (
             packed_recv_hidden,
@@ -813,7 +830,11 @@ class _MoriEPDispatcherImplLowLatency(_MoriEPDispatcherImplBase):
             is mori.ops.EpDispatchCombineKernelType.AsyncLL
         ), "mori asyncll mismatch"
 
-        self.mori_op.dispatch_recv()
+        self.mori_op.dispatch_recv(call_local_expert_count=True)
+
+        get_global_expert_distribution_recorder().on_deepep_dispatch_low_latency(
+            self.mori_op.local_expert_count
+        )
 
         return MoriEPLLDispatchOutput(
             hidden_states=hidden_states,

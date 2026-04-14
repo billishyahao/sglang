@@ -322,6 +322,8 @@ class _SinglePassGatherer(ABC):
                 return _DeepepLowLatencySinglePassGatherer(
                     expert_location_metadata, rank
                 )
+            elif server_args.deepep_mode == "auto":
+                return _SelectExpertsSinglePassGatherer(expert_location_metadata, rank)
             else:
                 raise NotImplementedError
 
@@ -411,14 +413,14 @@ class _DetailSinglePassGatherer(_SinglePassGatherer):
         num_tokens_per_rdma_rank,
         num_tokens_per_expert,
     ):
-        self._misc_objects.append(
-            dict(
-                layer_id=layer_idx,
-                num_tokens_per_rank=num_tokens_per_rank.cpu().tolist(),
-                num_tokens_per_rdma_rank=num_tokens_per_rdma_rank.cpu().tolist(),
-                num_tokens_per_expert=num_tokens_per_expert.cpu().tolist(),
-            )
-        )
+        misc = dict(layer_id=layer_idx)
+        if num_tokens_per_rank is not None:
+            misc["num_tokens_per_rank"] = num_tokens_per_rank.cpu().tolist()
+        if num_tokens_per_rdma_rank is not None:
+            misc["num_tokens_per_rdma_rank"] = num_tokens_per_rdma_rank.cpu().tolist()
+        if num_tokens_per_expert is not None:
+            misc["num_tokens_per_expert"] = num_tokens_per_expert.cpu().tolist()
+        self._misc_objects.append(misc)
 
     def reset(self):
         self._topk_ids_of_layer[...] = -1
